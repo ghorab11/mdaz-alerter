@@ -1,0 +1,101 @@
+name: MDAZ FP11 Alerter
+
+# A scheduled run relaunches every 5 min (GitHub's floor). In 'run' mode each
+# launch then polls once a minute for ~5 minutes, so real cadence is ~1/min.
+# Manual 'test' / 'dry-run' runs are single-shot and post nothing.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode for this manual run"
+        type: choice
+        default: test
+        options:
+          - test       # one request, prints HTTP status + count, posts NOTHING
+          - dry-run    # full run, prints the alerts it WOULD post, posts NOTHING
+          - run        # full run, posts to Google Chat
+
+# Never let two runs overlap (protects the shared dedup state).
+concurrency:
+  group: mdaz-alerter
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet requests tzdata
+
+      # Carry the dedup state forward from the most recent previous run so we
+      # don't re-alert the same order every tick. Each run saves under a unique
+      # key; restore-keys grabs the newest earlier one.
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: mdaz_alert_state.json
+          key: mdaz-state-${{ github.run_id }}
+          restore-keys: |
+            mdaz-state-
+
+      - name: Run alerter
+        env:
+          BREADFAST_BEARER_TOKEN: ${{ secrets.BREADFAST_BEARER_TOKEN }}
+          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          CONTROL_ROOM_BASE: ${{ secrets.CONTROL_ROOM_BASE }}
+          FP_ID: "11"
+          # Scheduled runs post for real; manual 'test'/'dry-run' never post.
+          DRY_RUN: "false"
+          # Thresholds (minutes) — tune here, no code change needed.
+          UNASSIGNED_THRESHOLD_MIN: "10"
+          FIRST_MILE_THRESHOLD_MIN: "20"
+          LAST_MILE_THRESHOLD_MIN: "20"
+          REALERT_MIN: "30"
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          MODE="${MODE:-run}"
+          echo "Running in mode: $MODE"
+          case "$MODE" in
+            test)
+              python mdaz_alerter.py --test
+              ;;
+            dry-run)
+              python mdaz_alerter.py --dry-run
+              ;;
+            *)
+              # ~1-minute cadence: poll every 60s for ~5 min, then this job ends
+              # and the next scheduled launch (every 5 min) takes over. A failed
+              # tick (e.g. a transient non-200) never kills the window.
+              END=$((SECONDS + 270))
+              tick=1
+              while : ; do
+                echo "--- tick $tick ($(date -u +%H:%M:%S) UTC) ---"
+                python mdaz_alerter.py || echo "tick $tick failed, continuing"
+                [ $SECONDS -ge $END ] && break
+                tick=$((tick + 1))
+                sleep 60
+              done
+              ;;
+          esac
+
+      # Persist the (possibly updated) state for the next run.
+      - name: Save alert state
+        if: ${{ always() && hashFiles('mdaz_alert_state.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: mdaz_alert_state.json
+          key: mdaz-state-${{ github.run_id }}

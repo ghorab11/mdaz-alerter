@@ -1,0 +1,5 @@
+config.json
+mdaz_alert_state.json
+mdaz_alerter.lock
+__pycache__/
+*.pyc

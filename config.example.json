@@ -1,0 +1,7 @@
+{
+  "BREADFAST_BEARER_TOKEN": "paste-your-token-here-without-the-word-Bearer",
+  "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/XXXX/messages?key=...&token=...",
+  "CONTROL_ROOM_BASE": "https://<your-control-room-host>/control-room",
+  "FP_ID": "11",
+  "DRY_RUN": true
+}
